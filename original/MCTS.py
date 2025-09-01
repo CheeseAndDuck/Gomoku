@@ -1,5 +1,5 @@
 """
-
+该代码定义了蒙特卡洛搜索树的决策算法，
 """
 import copy
 import torch.nn as nn
@@ -283,4 +283,5 @@ class MCTS():
 
     def __str__(self):
         return f"MCTS(模拟次数={self.simulations}, 根节点子节点数={len(self.root.children)})"
+
 
