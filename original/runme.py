@@ -1,3 +1,6 @@
+"""
+该文件是主程序，用于调动训练和测试
+"""
 from __future__ import print_function
 import os
 import tkinter as tk
@@ -718,3 +721,4 @@ class MetaZeta(threading.Thread):
 
 if __name__ == '__main__':
     metaZeta = MetaZeta()
+
