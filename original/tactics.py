@@ -1,5 +1,5 @@
 """
-该代码用于定义和训练策略网络
+该代码用于定义策略网络和策略网络训练器
 """
 
 import torch
@@ -15,10 +15,7 @@ import os
 import csv
 from datetime import datetime
 
-class ResidualCNN(nn.Module):
-    """
-    PyTorch 残差网络：输出 (policy_logits, value)
-    """
+class ResidualCNN(nn.Module):  # 残差块
     def __init__(self, input_dim, output_dim, hidden_layers={"filters": 38, "kernel_size": (3, 3)}, num_layers=20):
         super().__init__()
         self.input_dim = input_dim
@@ -27,7 +24,6 @@ class ResidualCNN(nn.Module):
         self.filters = hidden_layers["filters"]
         k = hidden_layers["kernel_size"][0]
         pad = k // 2
-
         in_channels = input_dim[0]
 
         self.conv_in = nn.Sequential(
@@ -69,10 +65,9 @@ class ResidualCNN(nn.Module):
     def BuildModel(self):
         return self
 
+
+# 定义策略网络，用于预测每个位置的落子概率
 class PolicyValueNet(ResidualCNN):
-    """
-    策略网络：预测每个位置的落子概率
-    """
     trainDataPoolSize = 18000 * 2
     trainBatchSize = 1024 * 2
     epochs = 10
@@ -88,10 +83,6 @@ class PolicyValueNet(ResidualCNN):
         self.optimizer = optim.Adam(self.parameters(), lr=self.learningRate)
         
     def policy_NN(self, input):
-        """
-        输入可以是 Board 或 torch.Tensor
-        输出：落子概率
-        """
         device = next(self.parameters()).device
         if isinstance(input, torch.Tensor):
             x = input.to(device)
@@ -132,9 +123,6 @@ class PolicyValueNet(ResidualCNN):
         return float(loss.detach().cpu().item())
 
     def update(self, scrollText=None, optimizer=None):
-        """
-        更新策略网络的参数
-        """
         print("开始训练策略网络")
         if len(self.trainDataPool) < self.trainBatchSize:
             if scrollText:
@@ -156,7 +144,6 @@ class PolicyValueNet(ResidualCNN):
             batchProbsOld = F.softmax(logits_old, dim=1).cpu().numpy()
 
         losses = []
-        # 训练多个epoch
         for epoch in range(self.epochs):
             loss = self.fit_batch(batchBoard, batchProbs, self.learningRate * self.LRfctor, optimizer)
             losses.append(loss)
@@ -166,7 +153,6 @@ class PolicyValueNet(ResidualCNN):
                 x_new = torch.from_numpy(np.array(batchBoard, dtype=np.float32)).to(device)
                 logits_new = self(x_new)
                 batchProbsNew = F.softmax(logits_new, dim=1).cpu().numpy()
-
             kl = np.mean(
                 np.sum(batchProbsOld * (np.log(batchProbsOld + 1e-10) - np.log(batchProbsNew + 1e-10)), axis=1))
             if kl > self.kl_targ * 4:
@@ -183,9 +169,7 @@ class PolicyValueNet(ResidualCNN):
         scrollText.insert(END, '训练策略网络\n'+'loss:' + str(round(avg_loss, 4))+'KL:'+str(round(kl, 4))+'\n')
         scrollText.see(END)
         scrollText.update()
-
         return avg_loss
-
 
     def memory(self, play_data):
         play_data = self.get_DataAugmentation(list(play_data)[:])
