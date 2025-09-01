@@ -1,11 +1,3 @@
-"""
-基于规则的五子棋AI：
- - 规则优先级：
-   1) 立即获胜：若有一步能直接连五则立即下。
-   2) 立即防守：若对手下一步能连五，则优先堵住所有致胜点中的一个。
-   3) 启发式评分：综合己方最长连子、对手潜在最长连子、中心偏好进行评分选择。
-"""
-
 from __future__ import annotations
 
 from typing import Dict, List, Tuple
@@ -13,21 +5,12 @@ import numpy as np
 
 
 class RuleBasedPlayer:
-    """
-    规则驱动的玩家，实现与 `MCTSPlayer` 相同的接口。
-    """
-
     def __init__(self, weight_my_chain: float = 10.0, weight_block_opp: float = 8.0, weight_center: float = 0.1):
         self.weight_my_chain = weight_my_chain
         self.weight_block_opp = weight_block_opp
         self.weight_center = weight_center
 
     def getAction(self, board, flag_is_train: bool,board_state):
-        """
-        返回：
-        - move: 选中的落子位置 (int)
-        - move_probs: 大小为 W*H 的概率分布，规则引擎为确定性，选中位置为 1，其余为 0。
-        """
         width, height = board.width, board.height
         n_in_row = board.n_in_row
         current_player = board.current_player
@@ -38,13 +21,13 @@ class RuleBasedPlayer:
         if not availables:
             return None, move_probs
 
-        # 1) 立即获胜：若有一步能直接连五则立即下
+        # 立即获胜
         for move in availables:
             if self._is_win_if_place(board.states, width, height, n_in_row, current_player, move):
                 move_probs[move] = 1.0
                 return move, move_probs
 
-        # 2) 立即防守：若对手下一步能连五，则优先堵住
+        # 立即防守
         threat_moves: List[int] = []
         for move in availables:
             if self._is_win_if_place(board.states, width, height, n_in_row, opponent, move):
@@ -58,7 +41,7 @@ class RuleBasedPlayer:
             move_probs[best_block] = 1.0
             return best_block, move_probs
 
-        # 3) 启发式评分：综合连子潜力与中心偏好
+        # 启发式评分
         best_move = max(
             availables,
             key=lambda m: self._heuristic_score(board.states, width, height, n_in_row, current_player, opponent, m),
@@ -67,10 +50,8 @@ class RuleBasedPlayer:
         return best_move, move_probs
 
     def resetMCTS(self):
-        # 与 MCTSPlayer 接口对齐；规则玩家不维护搜索树
         return None
 
-    # ---------- Heuristics ----------
     def _heuristic_score(
         self,
         states: Dict[int, int],
@@ -96,7 +77,7 @@ class RuleBasedPlayer:
             - self.weight_block_opp * opp_len
             - self.weight_center * dist2_center
         )
-        # 若该步即可形成 >= n 连子，显著加分（虽然第1步已经拦截，但保底）
+        # 若该步即可形成 >= n 连子，显著加分
         if my_len >= n_in_row:
             score += 1000.0
         return float(score)
@@ -123,15 +104,12 @@ class RuleBasedPlayer:
         r: int,
         c: int,
     ) -> int:
-        # 4个方向：|、—、\、/
         directions: List[Tuple[int, int]] = [(1, 0), (0, 1), (1, 1), (1, -1)]
         best = 1
         for dr, dc in directions:
             count = 1
-            # 正向
-            count += self._count_in_direction(states, width, height, player, r, c, dr, dc)
-            # 反向
-            count += self._count_in_direction(states, width, height, player, r, c, -dr, -dc)
+            count += self._count_in_direction(states, width, height, player, r, c, dr, dc)  # 正向
+            count += self._count_in_direction(states, width, height, player, r, c, -dr, -dc)  # 反向
             if count > best:
                 best = count
         return best
