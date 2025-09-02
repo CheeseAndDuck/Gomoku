@@ -1,7 +1,3 @@
-"""
-该代码用于定义和训练策略网络
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,15 +6,11 @@ from collections import deque
 import numpy as np
 import random
 from tqdm import tqdm
-from tkinter import END
 import os
 import csv
 from datetime import datetime
 
 class ResidualCNN(nn.Module):
-    """
-    PyTorch 残差网络：输出 (policy_logits, value)
-    """
     def __init__(self, input_dim, output_dim, hidden_layers={"filters": 38, "kernel_size": (3, 3)}, num_layers=20):
         super().__init__()
         self.input_dim = input_dim
@@ -35,6 +27,7 @@ class ResidualCNN(nn.Module):
             nn.BatchNorm2d(self.filters),
             nn.LeakyReLU()
         )
+
         blocks = []
         for _ in range(self.num_layers):
             blocks.append(nn.Sequential(
@@ -47,6 +40,7 @@ class ResidualCNN(nn.Module):
         self.res_blocks = nn.ModuleList(blocks)
 
         h, w = input_dim[1], input_dim[2]
+        # Policy head
         self.policy_head = nn.Sequential(
             nn.Conv2d(self.filters, 2, kernel_size=1, bias=False),
             nn.BatchNorm2d(2),
@@ -70,9 +64,6 @@ class ResidualCNN(nn.Module):
         return self
 
 class PolicyValueNet(ResidualCNN):
-    """
-    策略网络：预测每个位置的落子概率
-    """
     trainDataPoolSize = 18000 * 2
     trainBatchSize = 1024 * 2
     epochs = 10
@@ -80,18 +71,16 @@ class PolicyValueNet(ResidualCNN):
     kl_targ = 0.02
     learningRate = 2e-3
     LRfctor = 1.0
+    training_log_path = "D:/Graduate_student_without_testing/985/10th/models2/tactic_training_log.csv"
 
     def __init__(self, input_dim):
         self.input_dim = input_dim
         ResidualCNN.__init__(self, input_dim=self.input_dim, output_dim=self.input_dim[1] * self.input_dim[2])
         self.to('cuda' if torch.cuda.is_available() else 'cpu')
         self.optimizer = optim.Adam(self.parameters(), lr=self.learningRate)
+        os.makedirs(os.path.dirname(self.training_log_path), exist_ok=True)
         
     def policy_NN(self, input):
-        """
-        输入可以是 Board 或 torch.Tensor
-        输出：落子概率
-        """
         device = next(self.parameters()).device
         if isinstance(input, torch.Tensor):
             x = input.to(device)
@@ -107,11 +96,10 @@ class PolicyValueNet(ResidualCNN):
             probs = F.softmax(logits, dim=1)
         return probs
 
-    def fit_batch(self, batchBoard, batchProbs, learning_rate, optimizer=None):
+    def fit_batch(self, batchBoard, batchProbs, learning_rate):
         self.train()
-        if optimizer is not None:
-            for g in optimizer.param_groups:
-                g['lr'] = learning_rate
+        for g in self.optimizer.param_groups:
+            g['lr'] = learning_rate
         device = next(self.parameters()).device
         x = torch.from_numpy(np.array(batchBoard, dtype=np.float32)).to(device)
         target_probs = torch.from_numpy(np.array(batchProbs, dtype=np.float32)).to(device)
@@ -121,29 +109,37 @@ class PolicyValueNet(ResidualCNN):
         policy_loss = -(target_probs * log_probs).sum(dim=1).mean()
         loss = policy_loss
 
-        if optimizer is not None:
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-        else:
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
         return float(loss.detach().cpu().item())
 
-    def update(self, scrollText=None, optimizer=None):
-        """
-        更新策略网络的参数
-        """
-        print("开始训练策略网络")
+
+    def save_training_log(self, avg_loss, avg_kl):
+        try:
+            file_exists = os.path.exists(self.training_log_path)
+            
+            with open(self.training_log_path, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(['timestamp', 'avg_loss', 'avg_kl', 'learning_rate_factor', 'batch_size', 'data_pool_size'])
+                
+                writer.writerow([
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    avg_loss,
+                    avg_kl,
+                    self.LRfctor,
+                    self.trainBatchSize,
+                    len(self.trainDataPool)
+                ])
+            print(f"训练记录已保存到 {self.training_log_path}")
+        except Exception as e:
+            print(f"保存训练记录失败: {e}")
+
+    def update(self):
         if len(self.trainDataPool) < self.trainBatchSize:
-            if scrollText:
-                scrollText.insert(END, f"策略网络数据不足: {len(self.trainDataPool)}/{self.trainBatchSize}\n")
-                scrollText.see(END)
-                scrollText.update()
             return None
         
-        # 随机采样一个批次
         trainBatch = random.sample(self.trainDataPool, self.trainBatchSize)
         batchBoard = [data[0] for data in trainBatch]
         batchProbs = [data[1] for data in trainBatch]
@@ -156,33 +152,25 @@ class PolicyValueNet(ResidualCNN):
             batchProbsOld = F.softmax(logits_old, dim=1).cpu().numpy()
 
         losses = []
-        # 训练多个epoch
         for epoch in range(self.epochs):
-            loss = self.fit_batch(batchBoard, batchProbs, self.learningRate * self.LRfctor, optimizer)
+            loss = self.fit_batch(batchBoard, batchProbs, self.learningRate * self.LRfctor)
             losses.append(loss)
             
-            # 计算KL散度，用于调整学习率
             with torch.no_grad():
                 x_new = torch.from_numpy(np.array(batchBoard, dtype=np.float32)).to(device)
                 logits_new = self(x_new)
                 batchProbsNew = F.softmax(logits_new, dim=1).cpu().numpy()
-
             kl = np.mean(
                 np.sum(batchProbsOld * (np.log(batchProbsOld + 1e-10) - np.log(batchProbsNew + 1e-10)), axis=1))
             if kl > self.kl_targ * 4:
                 break
-
         avg_loss = sum(losses) / len(losses)
-        
-        # 根据KL散度调整学习率因子
         if kl > self.kl_targ * 2 and self.LRfctor > 0.1:
             self.LRfctor /= 1.5
         elif kl < self.kl_targ / 2 and self.LRfctor < 10:
             self.LRfctor *= 1.5
             
-        scrollText.insert(END, '训练策略网络\n'+'loss:' + str(round(avg_loss, 4))+'KL:'+str(round(kl, 4))+'\n')
-        scrollText.see(END)
-        scrollText.update()
+        self.save_training_log(avg_loss,kl)
 
         return avg_loss
 
