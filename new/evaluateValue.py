@@ -1,6 +1,3 @@
-"""
-该代码用于定义价值网络
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,15 +5,11 @@ import torch.optim as optim
 import numpy as np
 from collections import deque
 import os
-from tkinter import END
 import csv
 from datetime import datetime
 import random
 
 class ValueNetwork(nn.Module):
-    """
-    价值网络：评估棋盘状态的价值
-    """
     def __init__(self, input_dim, hidden_layers={"filters": 38, "kernel_size": (3, 3)}, num_layers=5):
         super().__init__()
         self.input_dim = input_dim
@@ -70,9 +63,6 @@ class ValueNetwork(nn.Module):
 
 
 class ValueTrainer:
-    """
-    价值网络训练器：封装价值网络的训练过程
-    """
     def __init__(self, input_dim, lr=1e-3, pool_size=10000, batch_size=512, epochs=5):
         self.input_dim = input_dim
         self.value_net = ValueNetwork(input_dim)
@@ -84,27 +74,14 @@ class ValueTrainer:
         self.trainDataPool = deque(maxlen=pool_size)
         self.trainBatchSize = batch_size
         self.epochs = epochs
-    
-    # 添加一个属性，使其能够直接访问价值网络
-    @property
-    def value_net_model(self):
-        return self.value_net
-    
+        self.training_log_path = "D:/Graduate_student_without_testing/985/10th/models2/evaluateValue_training_log.csv"
+        os.makedirs(os.path.dirname(self.training_log_path), exist_ok=True)
+        
 
     def evaluate(self, input):
-        """
-        评估棋盘状态的价值
-        """
-        device = next(self.value_net.parameters()).device
-        
         if isinstance(input, torch.Tensor):
             x = input.to(self.device)
-        elif isinstance(input, np.ndarray):
-            # 直接处理 NumPy 数组
-            board_np = input.reshape(-1, self.input_dim[0], self.input_dim[1], self.input_dim[2]).astype(np.float32)
-            x = torch.from_numpy(board_np).to(self.device)
         else:
-            # 处理 Board 对象
             board_np = input.current_state().reshape(
                 -1, self.input_dim[0], self.input_dim[1], self.input_dim[2]
             ).astype(np.float32)
@@ -114,21 +91,12 @@ class ValueTrainer:
         with torch.no_grad():
             value = self.value_net(x)
         return value.cpu().numpy()
-        
-
+    
     def memory(self, play_data):
-        """
-        将自我对弈数据存入记忆池
-        play_data: 列表，每个元素为 (state, mcts_probs, winner)
-        """
-        # 只提取状态和胜负结果
         value_data = [(state, winner) for state, _, winner in play_data]
         self.trainDataPool.extend(value_data)
     
     def fit_batch(self, batchBoard, batchWinner):
-        """
-        训练一个批次的数据
-        """
         self.value_net.train()
         x = torch.from_numpy(np.array(batchBoard, dtype=np.float32)).to(self.device)
         target_values = torch.from_numpy(np.array(batchWinner, dtype=np.float32)).to(self.device)
@@ -139,100 +107,61 @@ class ValueTrainer:
         self.optimizer.zero_grad()
         value_loss.backward()
         self.optimizer.step()
+        
         return float(value_loss.detach().cpu().item())
     
 
 
-    # def save_training_log(self, avg_loss):
-    #     """
-    #     保存训练记录到Excel文件，只保存最终的平均损失和KL散度
-    #     """
-    #     try:
-    #         # 检查是否需要创建日志文件的目录
-    #         log_dir = os.path.dirname(self.training_log_path)
-    #         if log_dir and not os.path.exists(log_dir):
-    #             os.makedirs(log_dir)
-                
-    #         # 创建数据字典 - 移除不存在的 self.LRfctor
-    #         data = {
-    #             'timestamp': [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-    #             'avg_loss': [avg_loss],
-    #             'batch_size': [self.trainBatchSize],
-    #             'data_pool_size': [len(self.trainDataPool)]
-    #         }
+    def save_training_log(self, avg_loss):
+        try:
+            log_dir = os.path.dirname(self.training_log_path)
+            if log_dir and not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+       
+            data = {
+                'timestamp': [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+                'avg_loss': [avg_loss],
+                'batch_size': [self.trainBatchSize],
+                'data_pool_size': [len(self.trainDataPool)]
+            }
+
+            file_exists = os.path.exists(self.training_log_path)
             
-    #         # 检查文件是否存在以决定是否写入标题
-    #         file_exists = os.path.exists(self.training_log_path)
-            
-    #         with open(self.training_log_path, 'a', newline='', encoding='utf-8') as f:
-    #             writer = csv.DictWriter(f, fieldnames=data.keys())
+            with open(self.training_log_path, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=data.keys())
                 
-    #             if not file_exists:
-    #                 writer.writeheader()
+                if not file_exists:
+                    writer.writeheader()
                 
-    #             writer.writerow(data)
-            
-    #         # 打印保存成功信息
-    #         print(f"训练记录已保存到 {self.training_log_path}")
-        
-    #     except Exception as e:
-    #         print(f"保存训练记录失败: {e}")
+                writer.writerow(data)
+            print(f"训练记录已保存到 {self.training_log_path}")
+        except Exception as e:
+            print(f"保存训练记录失败: {e}")
 
 
 
-    def update(self, scrollText=None):
-        """
-        更新价值网络参数
-        """
-        print("开始训练评估网络")
+    def update(self):
         if len(self.trainDataPool) < self.trainBatchSize:
-            if scrollText:
-                scrollText.insert(END, f"价值网络数据不足: {len(self.trainDataPool)}/{self.trainBatchSize}\n")
-                scrollText.see(END)
-                scrollText.update()
             return None
         
-        # 随机采样一个批次
         batch_data = random.sample(self.trainDataPool, self.trainBatchSize)
         batchBoard = [data[0] for data in batch_data]
         batchWinner = [data[1] for data in batch_data]
         
         losses = []
-        # 训练多个epoch
         for epoch in range(self.epochs):
             loss = self.fit_batch(batchBoard, batchWinner)
             losses.append(loss)
-            
-            # if scrollText:
-            #     scrollText.insert(END, f"训练价值网络 epoch {epoch+1}/{self.epochs}, loss: {loss:.6f}\n")
-            #     scrollText.see(END)
-            #     scrollText.update()
-       
-        
         avg_loss = sum(losses) / len(losses)
-
-        # scrollText.delete(1.0, END)
-        scrollText.insert(END, '训练评估网络\n'+'loss:' + str(round(avg_loss, 4))+'\n')
-        scrollText.see(END)
-        scrollText.update()
-        # self.save_training_log(avg_loss)
-
-
+        print( '训练评估网络\n'+'loss:' + str(round(avg_loss, 4))+'\n')
+        self.save_training_log(avg_loss)
         return avg_loss
     
     def load_model(self, model_file):
-        """
-        加载模型参数
-        """
         state_dict = torch.load(model_file, map_location=self.device)
         self.value_net.load_state_dict(state_dict)
         print(f"Loaded value model from {model_file}")
     
     def save_model(self, model_file):
-        """
-        保存模型参数
-        """
         torch.save(self.value_net.state_dict(), model_file)
         print(f"Saved value model to {model_file}")
-
-    
