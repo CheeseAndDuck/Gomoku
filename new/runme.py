@@ -9,7 +9,7 @@ import math
 import csv
 import json
 import torch
-from collections import deque  # 新增这一行导入deque
+from collections import deque 
 
 from MCTS import *
 from tactics import PolicyValueNet
@@ -445,3 +445,4 @@ class MetaZeta(threading.Thread):
 if __name__ == '__main__':
     checkpoint_path = 'new/models2/checkpoint_150.pth'  # 续训：后面跑了10局后保存为checkpoint_10.pth
     metaZeta = MetaZeta(flag_is_train=True, load_from_checkpoint=checkpoint_path)
+
