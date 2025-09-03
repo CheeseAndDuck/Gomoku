@@ -61,14 +61,14 @@ class TreeNode(): # 蒙特卡洛搜索树的节点类
 
  # 蒙特卡洛搜索树
 class MCTS(): 
-
-    def __init__(self, policy_NN, value_net, factor=5, simulations=100, gamma=0.95):
+    def __init__(self, policy_NN, value_net, factor=5, simulations=100, gamma=0.95, max_simulation_depth=10):
         self.root = TreeNode(None, 1.0)  # 根节点初始化
         self.policy_NN = policy_NN  # 策略网络（输入状态，输出动作概率）
         self.value_net = value_net  # 价值网络（输入状态，输出状态价值）
         self.fator = factor  # UCB探索系数（平衡探索与利用）
         self.simulations = simulations  # 每次决策的模拟次数
         self.gamma = gamma  # 累积折扣因子（远期奖励衰减）
+        self.max_simulation_depth = max_simulation_depth  # 最大模拟深度
 
         # 动态α参数：控制价值网络(V)与累积奖惩(R)的权重
         self.alpha = 0.2  # 初始值（偏向累积奖惩：1-α=0.8）
@@ -93,8 +93,7 @@ class MCTS():
             }
         }
         
-    def playout(self, state):
-        # 推演过程：选择→扩展→模拟→回溯
+    def playout(self, state):  # 推演过程：选择→扩展→模拟→回溯
         node = self.root
         path = [] 
 
@@ -104,7 +103,8 @@ class MCTS():
             if action >= state.width * state.height or action < 0:
                 raise ValueError(f"无效动作 {action}，棋盘尺寸 {state.width}x{state.height}")
             state.do_move(action)  # 执行动作更新状态
-            path.append((node, action))
+            state_copy = copy.deepcopy(state)
+            path.append((node, action,state_copy))
             
             # 计算当前动作的即时奖励并存储到节点
             immediate_reward = self._calculate_immediate_reward(state, action)
@@ -135,8 +135,9 @@ class MCTS():
     def _simulate(self, state):  # 模拟：70%概率使用启发式规则，30%概率随机
         state_copy = copy.deepcopy(state)
         move_count = 0
+        max_simulation_depth = 10  # 最大模拟深度
         
-        while True:
+        while move_count < max_simulation_depth:
             game_over, winner = state_copy.gameIsOver()
             if game_over:
                 # 从当前玩家视角返回结果
@@ -158,6 +159,13 @@ class MCTS():
                 
             state_copy.do_move(move)
             move_count += 1
+        
+        # 达到最大模拟深度后，使用价值网络评估当前状态
+        with torch.no_grad():
+            state_value = self.value_net.evaluate(state_copy)
+            if isinstance(state_value, torch.Tensor):
+                state_value = state_value.squeeze(0).item()
+            return state_value
 
 
     def _backpropagate(self, path, simulated_value):  # 回溯：按折扣因子累积奖惩，使用模拟结果更新节点价值
@@ -168,23 +176,23 @@ class MCTS():
         cumulative_value = simulated_value
         
         # 先处理叶子节点（路径最后一个元素）
-        leaf_node, leaf_action = path[-1]
+        leaf_node, leaf_action,leaf_satate = path[-1]
         leaf_immediate_reward = leaf_node.immediate_reward
 
         # 计算叶子节点的组合价值：α*V + (1-α)*(R + γ*V未来)
         leaf_combined_value = self.get_node_value(
-            state=None,
+            state=leaf_satate,
             immediate_reward=leaf_immediate_reward,
             future_value=cumulative_value
         )
         leaf_node.update(leaf_combined_value)  # 更新叶子节点价值
         cumulative_value = -leaf_combined_value  # 对手视角价值取反
 
-        # 处理路径上的非叶子节点（从后往前遍历）
-        for node, action in reversed(path[:-1]):
+        for i in range(len(path)-2,-1,-1):
+            node, action, state = path[i]
             # 计算当前节点的组合价值
             node_combined_value = self.get_node_value(
-                state=None,
+                state=state,  # 使用保存的状态
                 immediate_reward=node.immediate_reward,
                 future_value=cumulative_value
             )
@@ -387,8 +395,11 @@ class MCTS():
         state_value = 0.0
         if state is not None and hasattr(self.value_net, 'evaluate'):
             with torch.no_grad():
-                state_value = self.value_net.evaluate(state).squeeze(0).item() if isinstance(
-                    self.value_net.evaluate(state), torch.Tensor) else 0.0
+                eval_result = self.value_net.evaluate(state)
+                if isinstance(eval_result, torch.Tensor):
+                    state_value = eval_result.squeeze(0).item()
+                else:
+                    state_value = eval_result
 
         # 累积折扣奖惩：即时奖励 + 折扣因子 * 未来价值
         cumulative_reward = immediate_reward + self.gamma * future_value
