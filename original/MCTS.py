@@ -64,12 +64,13 @@ class TreeNode():  # 蒙特卡洛搜索树的节点类
 
 # 定义蒙特卡洛搜索树
 class MCTS():  
-    def __init__(self, policy_NN, value_net, factor=5, simulations=1005):
+    def __init__(self, policy_NN, value_net, factor=5, simulations=1005,max_simulation_depth=10):
         self.root = TreeNode(None, 1.0)  # 根节点初始化
         self.policy_NN = policy_NN  # 策略网络（输入状态，输出动作概率）
         self.value_net = value_net  # 价值网络（输入状态，输出状态价值）
         self.fator = factor  # UCB探索系数（平衡探索与利用）
         self.simulations = simulations  # 每次决策的模拟次数
+        self.max_simulation_depth = max_simulation_depth  # 模拟的最大深度
 
     def playout(self, state):  # 推演过程：选择→扩展→模拟→回溯
         node = self.root
@@ -81,7 +82,8 @@ class MCTS():
             if action >= state.width * state.height or action < 0:
                 raise ValueError(f"无效动作 {action}，棋盘尺寸 {state.width}x{state.height}")
             state.do_move(action)
-            path.append((node, action))
+            state_copy = copy.deepcopy(state)
+            path.append((node, action,state_copy))
          
         # 扩展
         with torch.no_grad():
@@ -89,8 +91,10 @@ class MCTS():
             action_probs = action_probs.squeeze(0).cpu().numpy() if isinstance(action_probs, torch.Tensor) else action_probs
 
         # 模拟
-        simulated_value = self._simulate(state)
-        gameOver, winner = state.gameIsOver() # 终局判断
+        simulated_value = self._simulate(state,self.max_simulation_depth)
+
+        # 终局判断
+        gameOver, winner = state.gameIsOver() 
         if not gameOver:
             # 扩展
             available_moves = state.getAvailableMoves() if hasattr(state, 'getAvailableMoves') else []
@@ -104,11 +108,12 @@ class MCTS():
         # 回溯
         self._backpropagate(path, simulated_value)
 
-    def _simulate(self, state):  # 模拟：70%概率使用启发式规则，30%概率随机
+    def _simulate(self, state,max_simulation_depth):  # 模拟：70%概率使用启发式规则，30%概率随机
         state_copy = copy.deepcopy(state)
         move_count = 0
+        max_simulation_depth = max_simulation_depth
         
-        while True:
+        while move_count < max_simulation_depth:
             game_over, winner = state_copy.gameIsOver()
             if game_over:
                 # 从当前玩家视角返回结果
@@ -121,39 +126,47 @@ class MCTS():
             available_moves = state_copy.getAvailableMoves()
             if not available_moves:
                 return 0.0
-
+            # 70%使用启发式规则，30%使用随机选择
             if random.random() < 0.7:
                 move = self._heuristic_choice(state_copy)
             else:
                 move = random.choice(available_moves)
             state_copy.do_move(move)
             move_count += 1
+        
+        with torch.no_grad():
+            state_value = self.value_net.evaluate(state_copy)
+            if isinstance(state_value,torch.Tensor):
+                state_value = state_value.squeeze(0).item()
+            return state_value
+
 
     def _backpropagate(self, path, simulated_value): # 回溯
         if not path:
             return
-        # 处理叶子节点：用模拟价值（终局结果）替代价值网络评估
-        leaf_node, _ = path[-1]
+        cumulative_value = simulated_value
+         # 先处理叶子节点（路径最后一个元素）
+        leaf_node, leaf_action,leaf_satate = path[-1]
         leaf_immediate_reward = leaf_node.immediate_reward
-        # 叶子节点为终局，模拟价值即真实状态价值，无需额外评估
+        # 计算叶子节点的组合价值：
         leaf_combined_value = self.get_node_value(
-            state=None,  # 终局状态无需传参，用模拟价值替代
+            state=leaf_satate,
             immediate_reward=leaf_immediate_reward
         )
-        #叶子节点需结合模拟价值
-        leaf_combined_value = simulated_value
-        leaf_node.update(leaf_combined_value)
-        
-        # 处理非叶子节点
-        for node, _ in reversed(path[:-1]):
-            node_immediate_reward = node.immediate_reward
+        leaf_node.update(leaf_combined_value)  # 更新叶子节点价值
+        cumulative_value = -leaf_combined_value  # 对手视角价值取反
+
+        for i in range(len(path)-2,-1,-1):
+            node, action, state = path[i]
+            # 计算当前节点的组合价值
             node_combined_value = self.get_node_value(
-                state=None,
-                immediate_reward=node_immediate_reward
+                state=state,  # 使用保存的状态
+                immediate_reward=node.immediate_reward
             )
-            node.update(node_combined_value)
-        
-        # 确保根节点更新
+            node.update(node_combined_value)  # 更新当前节点价值
+            cumulative_value = -node_combined_value  # 对手视角取反
+
+        # 根节点更新（若路径仅含叶子节点）
         if len(path) == 1:
             self.root.update(leaf_combined_value)
 
@@ -256,8 +269,11 @@ class MCTS():
         if state is not None and hasattr(self.value_net, 'evaluate'):
             with torch.no_grad():
                 eval_result = self.value_net.evaluate(state)
-                state_value = eval_result.squeeze(0).item() if isinstance(eval_result, torch.Tensor) else 0.0
-        return state_value
+                if isinstance(eval_result, torch.Tensor):
+                    state_value = eval_result.squeeze(0).item()
+                else:
+                    state_value = eval_result
+        return state_value + immediate_reward
     
 
     def getMoveProbs(self, state, flag_is_train, board_state):  # 基于模拟次数统计访问频率获取落子动作与概率
@@ -283,5 +299,4 @@ class MCTS():
 
     def __str__(self):
         return f"MCTS(模拟次数={self.simulations}, 根节点子节点数={len(self.root.children)})"
-
 
