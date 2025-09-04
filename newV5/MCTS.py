@@ -111,7 +111,6 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
             state_copy = copy.deepcopy(state)
             action_probs = action_probs.squeeze(0).cpu().numpy() if isinstance(action_probs, torch.Tensor) else action_probs   # 格式转换：GPU张量→CPU numpy
 
-
         # 终局判断
         gameOver, winner = state.gameIsOver()
         if not gameOver:
