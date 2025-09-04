@@ -21,6 +21,7 @@ class TreeNode():
         self.U = 0  # UCB探索项
         self.P = prior_p  # 先验概率（来自策略网络）
         self.immediate_reward = 0.0  # 存储当前节点的即时奖励
+        self.state_value = 0.0  # 存储节点的状态价值（来自价值网络）
 
     def getValue(self, factor): # 计算节点价值
         self.U = (factor * self.P * np.sqrt(self.father.N_visits) / (1 + self.N_visits))
@@ -106,9 +107,10 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
         # 评估
         with torch.no_grad():  # 禁用梯度计算，提升效率
             action_probs = self.policy_NN(state)
-            leaf_value = self.value_net.evaluate(state) if hasattr(self.value_net, 'evaluate') else torch.tensor(0.0)  # 价值网络评估状态价值
+            # 保存当前状态用于价值网络评估
+            state_copy = copy.deepcopy(state)
             action_probs = action_probs.squeeze(0).cpu().numpy() if isinstance(action_probs, torch.Tensor) else action_probs   # 格式转换：GPU张量→CPU numpy
-            leaf_value = leaf_value.squeeze(0).item() if isinstance(leaf_value, torch.Tensor) else leaf_value
+
 
         # 终局判断
         gameOver, winner = state.gameIsOver()
@@ -117,36 +119,41 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
             action_probs_filtered = [(move, action_probs[move]) for move in available_moves if
                                      0 <= move < len(action_probs)]
             node.expand(action_probs_filtered)
+            # 非终局情况：使用价值网络评估状态价值
+            state_value = self.value_net.evaluate(state_copy) if hasattr(self.value_net, 'evaluate') else torch.tensor(0.0)
+            state_value = state_value.squeeze(0).item() if isinstance(state_value, torch.Tensor) else state_value
+            node.state_value = state_value  # 存储状态价值
+            leaf_value = 0.0  # 未来价值设为0，因为我们将使用状态价值
         else:
             # 终局价值修正：赢=1，输=-1，平=0（基于当前玩家视角）
             leaf_value = 1.0 if winner == state.getCurrentPlayer() else (-1.0 if winner != -1 else 0.0)
+            node.state_value = leaf_value  # 终局时状态价值等于最终结果
 
         # 回溯
-        self._backpropagate(path, leaf_value)
+        self._backpropagate(path, leaf_value, node.state_value)
 
-    def _backpropagate(self, path, final_leaf_value):  # 回溯更新：按折扣因子累积奖惩，结合价值网络计算节点价值
+    def _backpropagate(self, path,  future_value, state_value):  # 回溯更新：按折扣因子累积奖惩，结合价值网络计算节点价值
         if not path:
             return
-
         # 从叶子节点向根节点反向遍历
-        cumulative_value = final_leaf_value
+        cumulative_value = future_value
         leaf_node, leaf_action = path[-1]
         leaf_immediate_reward = leaf_node.immediate_reward
 
         # 计算叶子节点的组合价值：α*V + (1-α)*(R + γ*V未来)
         leaf_combined_value = self.get_node_value(
-            state=None,  # 叶子节点已通过value_net评估，无需重复计算
+            state_value=state_value,  # 使用传入的状态价值
             immediate_reward=leaf_immediate_reward,
             future_value=cumulative_value
         )
+
         leaf_node.update(leaf_combined_value)  # 更新叶子节点价值
         cumulative_value = -leaf_combined_value  # 对手视角价值取反
 
         # 处理路径上的非叶子节点（从后往前遍历）
         for node, action in reversed(path[:-1]):
-            # 计算当前节点的组合价值
-            node_combined_value = self.get_node_value(
-                state=None,
+            node_combined_value = self.get_node_value(  # 非叶子节点不调用价值网络
+                state_value=0.0,
                 immediate_reward=node.immediate_reward,
                 future_value=cumulative_value
             )
@@ -268,15 +275,8 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
                 return 0  # 连子末端是空位置，未被阻断
         else:
             return 0  # 无连子或超出棋盘，无阻断
-
-    def get_node_value(self, state, immediate_reward, future_value):  # 计算节点组合价值：α*V(价值网络) + (1-α)*(R + γ*V未来)
-        # 价值网络输出的状态价值
-        state_value = 0.0
-        if state is not None and hasattr(self.value_net, 'evaluate'):
-            with torch.no_grad():
-                state_value = self.value_net.evaluate(state).squeeze(0).item() if isinstance(
-                    self.value_net.evaluate(state), torch.Tensor) else 0.0
-
+    
+    def get_node_value(self, state_value, immediate_reward, future_value): 
         # 累积折扣奖惩：即时奖励 + 折扣因子 * 未来价值
         cumulative_reward = immediate_reward + self.gamma * future_value
 
