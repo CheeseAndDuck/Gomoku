@@ -21,13 +21,12 @@ class TreeNode():
         self.U = 0  # UCB探索项
         self.P = prior_p  # 先验概率（来自策略网络）
         self.immediate_reward = 0.0  # 存储当前节点的即时奖励
-        self.state_value = 0.0  # 存储节点的状态价值（来自价值网络）
 
     def getValue(self, factor): # 计算节点价值
         self.U = (factor * self.P * np.sqrt(self.father.N_visits) / (1 + self.N_visits))
         return self.Q + self.U
 
-    def expand(self, action_priors):
+    def expand(self, action_priors): # 扩展节点
         for action, prob in action_priors:
             if action not in self.children:
                 self.children[action] = TreeNode(self, prob)
@@ -39,7 +38,7 @@ class TreeNode():
         self.N_visits += 1
         self.Q += 1.0 * (leaf_value - self.Q) / self.N_visits 
 
-    def updateRecursive(self, leaf_value):
+    def updateRecursive(self, leaf_value):  # 回溯
         if self.father:
             self.NUM = 0
             for i in list(self.children.items()):
@@ -58,7 +57,6 @@ class TreeNode():
 
 
 class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
-
     def __init__(self, policy_NN, value_net, factor=5, simulations=100, gamma=0.95):
         self.root = TreeNode(None, 1.0)  # 根节点初始化
         self.policy_NN = policy_NN  # 策略网络（输入状态，输出动作概率）
@@ -69,7 +67,7 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
 
         # 动态α参数：控制价值网络(V)与累积奖惩(R)的权重
         self.alpha = 0.2  # 初始值（偏向累积奖惩：1-α=0.8）
-        self.alpha_growth_rate = 0.005  # 每局训练后α的增长速率（逐渐偏向价值网络）
+        self.alpha_growth_rate = 0.002  # 每局训练后α的增长速率（逐渐偏向价值网络）
         self.max_alpha = 0.8  # α最大值（避免过度依赖价值网络）
 
         # 奖惩参数配置
@@ -100,7 +98,9 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
             if action >= state.width * state.height or action < 0:
                 raise ValueError(f"无效动作 {action}，棋盘尺寸 {state.width}x{state.height}")
             state.do_move(action)
-            path.append((node, action))
+            state_copy = copy.deepcopy(state)
+            path.append((node, action,state_copy))
+            # 计算当前动作的即时奖励
             immediate_reward = self._calculate_immediate_reward(state, action)
             node.immediate_reward = immediate_reward
 
@@ -124,8 +124,9 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
             node.state_value = state_value  # 存储状态价值
             leaf_value = 0.0  # 未来价值设为0，因为我们将使用状态价值
         else:
+            final_reward = self._calculate_immediate_reward(state,action)
             # 终局价值修正：赢=1，输=-1，平=0（基于当前玩家视角）
-            leaf_value = 1.0 if winner == state.getCurrentPlayer() else (-1.0 if winner != -1 else 0.0)
+            leaf_value = 1.0 if winner == state.getCurrentPlayer() else (-1.0 if winner != -1 else 0.0) + final_reward
             node.state_value = leaf_value  # 终局时状态价值等于最终结果
 
         # 回溯
@@ -136,12 +137,12 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
             return
         # 从叶子节点向根节点反向遍历
         cumulative_value = future_value
-        leaf_node, leaf_action = path[-1]
+        leaf_node, leaf_action,leaf_satate = path[-1]
         leaf_immediate_reward = leaf_node.immediate_reward
 
         # 计算叶子节点的组合价值：α*V + (1-α)*(R + γ*V未来)
         leaf_combined_value = self.get_node_value(
-            state_value=state_value,  # 使用传入的状态价值
+            state=leaf_satate,  # 使用传入的状态价值
             immediate_reward=leaf_immediate_reward,
             future_value=cumulative_value
         )
@@ -150,9 +151,10 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
         cumulative_value = -leaf_combined_value  # 对手视角价值取反
 
         # 处理路径上的非叶子节点（从后往前遍历）
-        for node, action in reversed(path[:-1]):
+        for i in range(len(path)-2,-1,-1):
+            node, action,state = path[i]
             node_combined_value = self.get_node_value(  # 非叶子节点不调用价值网络
-                state_value=0.0,
+                state=state,
                 immediate_reward=node.immediate_reward,
                 future_value=cumulative_value
             )
@@ -255,7 +257,7 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
     def _count_blocked_in_direction(self, states, width, height, player, opponent, r, c, dr, dc):  # 计算指定方向上，玩家连子被对手阻断的长度
         count = 0
         nr, nc = r + dr, c + dc  # 下一个位置
-
+        has_opponent = False  # 标记连子中是否有对手棋子
         # 第一步：统计当前方向上的玩家连子
         while 0 <= nr < height and 0 <= nc < width:
             pos = nr * width + nc
@@ -263,8 +265,19 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
                 count += 1
                 nr += dr
                 nc += dc
+            elif states.get(pos, -1) == opponent:
+                has_opponent = True  # 连子中间有对手棋子，视为被阻断
+                break
             else:
                 break
+        
+        # 若连子中间有对手棋子，返回当前连子长度（视为被阻断）
+        if has_opponent and count > 0:
+            return count
+        # 原逻辑：检查末端是否被阻断
+        if count > 0 and 0 <= nr < height and 0 <= nc < width:
+            if states.get(nr * width + nc, -1) == opponent:
+                return count
 
         # 第二步：检查连子末端是否被对手棋子阻断（若连子存在且末端非空）
         if count > 0 and 0 <= nr < height and 0 <= nc < width:
@@ -275,7 +288,16 @@ class MCTS():  # 蒙特卡洛搜索树：整合奖惩机制+累积折扣
         else:
             return 0  # 无连子或超出棋盘，无阻断
     
-    def get_node_value(self, state_value, immediate_reward, future_value): 
+    def get_node_value(self, state, immediate_reward, future_value): 
+        state_value = 0.0
+        if state is not None and hasattr(self.value_net, 'evaluate'):
+            with torch.no_grad():
+                eval_result = self.value_net.evaluate(state)
+                if isinstance(eval_result, torch.Tensor):
+                    state_value = eval_result.squeeze(0).item()
+                else:
+                    state_value = eval_result
+
         # 累积折扣奖惩：即时奖励 + 折扣因子 * 未来价值
         cumulative_reward = immediate_reward + self.gamma * future_value
 
