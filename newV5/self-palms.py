@@ -1,3 +1,6 @@
+"""
+该代码是用来调用两个模型对弈的，使用的是.pth文件
+"""
 from __future__ import print_function
 import os
 import tkinter as tk
@@ -433,4 +436,5 @@ class PTHAIVsAIVisualizer(threading.Thread):
 
 
 if __name__ == '__main__':
+
     visualizer = PTHAIVsAIVisualizer()
